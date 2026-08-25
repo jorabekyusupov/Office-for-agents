@@ -1,0 +1,21 @@
+{
+  "name": "@ai-office/db",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint src tests --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "migrate": "tsx src/migrate.ts",
+    "seed": "tsx src/seed.ts"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.20.5"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  }
+}

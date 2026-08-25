@@ -1,0 +1,24 @@
+CREATE TYPE "ProjectStatus" AS ENUM ('ACTIVE', 'ARCHIVED');
+CREATE TYPE "AgentProvider" AS ENUM ('MOCK', 'OPENAI', 'ANTHROPIC', 'GOOGLE');
+CREATE TYPE "TaskStatus" AS ENUM ('TODO', 'QUEUED', 'IN_PROGRESS', 'WAITING_INPUT', 'BLOCKED', 'COMPLETED', 'FAILED', 'CANCELLED');
+CREATE TYPE "RunStatus" AS ENUM ('QUEUED', 'STARTING', 'WORKING', 'WAITING_INPUT', 'BLOCKED', 'COMPLETED', 'FAILED', 'CANCELLED');
+CREATE TYPE "ArtifactStatus" AS ENUM ('DRAFT', 'READY', 'SUPERSEDED');
+
+CREATE TABLE "Project" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL REFERENCES "Workspace"("id") ON DELETE CASCADE, "name" TEXT NOT NULL, "description" TEXT, "status" "ProjectStatus" NOT NULL DEFAULT 'ACTIVE', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE INDEX "Project_workspaceId_status_idx" ON "Project"("workspaceId", "status");
+CREATE TABLE "Room" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "projectId" TEXT NOT NULL UNIQUE REFERENCES "Project"("id") ON DELETE CASCADE, "layoutVersion" INTEGER NOT NULL DEFAULT 1, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE TABLE "Chat" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL, "projectId" TEXT NOT NULL REFERENCES "Project"("id") ON DELETE CASCADE, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE INDEX "Chat_workspaceId_projectId_idx" ON "Chat"("workspaceId", "projectId");
+CREATE TABLE "Message" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "chatId" TEXT NOT NULL REFERENCES "Chat"("id") ON DELETE CASCADE, "authorId" TEXT, "content" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX "Message_chatId_createdAt_idx" ON "Message"("chatId", "createdAt");
+CREATE TABLE "Agent" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL REFERENCES "Workspace"("id") ON DELETE CASCADE, "name" TEXT NOT NULL, "provider" "AgentProvider" NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, UNIQUE("workspaceId", "name"));
+CREATE TABLE "Task" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL, "projectId" TEXT NOT NULL REFERENCES "Project"("id") ON DELETE CASCADE, "title" TEXT NOT NULL, "status" "TaskStatus" NOT NULL DEFAULT 'TODO', "idempotencyKey" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, UNIQUE("projectId", "idempotencyKey"));
+CREATE INDEX "Task_workspaceId_projectId_status_idx" ON "Task"("workspaceId", "projectId", "status");
+CREATE TABLE "AgentRun" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL, "projectId" TEXT NOT NULL REFERENCES "Project"("id") ON DELETE CASCADE, "taskId" TEXT NOT NULL REFERENCES "Task"("id") ON DELETE CASCADE, "agentId" TEXT NOT NULL REFERENCES "Agent"("id") ON DELETE RESTRICT, "attempt" INTEGER NOT NULL, "status" "RunStatus" NOT NULL DEFAULT 'QUEUED', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, UNIQUE("taskId", "attempt"));
+CREATE INDEX "AgentRun_workspaceId_projectId_status_idx" ON "AgentRun"("workspaceId", "projectId", "status");
+CREATE TABLE "TaskEvent" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL, "projectId" TEXT NOT NULL REFERENCES "Project"("id") ON DELETE CASCADE, "taskId" TEXT NOT NULL REFERENCES "Task"("id") ON DELETE CASCADE, "sequence" INTEGER NOT NULL, "type" TEXT NOT NULL, "payload" JSONB NOT NULL, "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE("projectId", "sequence"));
+CREATE INDEX "TaskEvent_taskId_occurredAt_idx" ON "TaskEvent"("taskId", "occurredAt");
+CREATE TABLE "Artifact" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL, "projectId" TEXT NOT NULL REFERENCES "Project"("id") ON DELETE CASCADE, "taskId" TEXT NOT NULL REFERENCES "Task"("id") ON DELETE RESTRICT, "runId" TEXT REFERENCES "AgentRun"("id") ON DELETE SET NULL, "title" TEXT NOT NULL, "mimeType" TEXT NOT NULL, "status" "ArtifactStatus" NOT NULL DEFAULT 'DRAFT', "storageKey" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE INDEX "Artifact_workspaceId_projectId_status_idx" ON "Artifact"("workspaceId", "projectId", "status");
+CREATE TABLE "OutboxEvent" ("id" TEXT PRIMARY KEY DEFAULT gen_random_uuid(), "workspaceId" TEXT NOT NULL, "projectId" TEXT NOT NULL REFERENCES "Project"("id") ON DELETE CASCADE, "topic" TEXT NOT NULL, "payload" JSONB NOT NULL, "occurredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "publishedAt" TIMESTAMP(3));
+CREATE INDEX "OutboxEvent_publishedAt_occurredAt_idx" ON "OutboxEvent"("publishedAt", "occurredAt");

@@ -1,0 +1,2 @@
+ALTER TABLE "AgentRun" ADD COLUMN IF NOT EXISTS "cancellationRequestedAt" TIMESTAMP(3);
+ALTER TABLE "AgentRun" ADD COLUMN IF NOT EXISTS "cancelledAt" TIMESTAMP(3);

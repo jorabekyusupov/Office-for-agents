@@ -1,0 +1,3 @@
+export type Notification = { id: string; workspaceId: string; projectId: string; evidenceId: string; type: 'input_requested' | 'artifact_ready' | 'approval_needed'; createdAt: string };
+export function coalesceNotifications(items: Notification[]) { const seen = new Set<string>(); return items.filter(item => { const key = `${item.type}:${item.evidenceId}`; if (seen.has(key)) return false; seen.add(key); return true; }); }
+export function safeArtifactAccess(authorized: boolean, artifactId: string) { return authorized ? { ok: true, url: `/api/artifacts/${artifactId}/download` } : { ok: false, error: 'artifact_access_denied' }; }

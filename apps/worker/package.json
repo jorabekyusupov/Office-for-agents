@@ -1,0 +1,23 @@
+{
+  "name": "@ai-office/worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "lint": "eslint src tests --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "smoke": "tsx src/smoke.ts"
+  },
+  "dependencies": {
+    "@ai-office/contracts": "workspace:*",
+    "@prisma/client": "^6.19.1",
+    "bullmq": "^6.2.0",
+    "ioredis": "^6.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5"
+  }
+}

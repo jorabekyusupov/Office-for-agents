@@ -1,0 +1,30 @@
+{
+  "name": "ai-office-platform",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "pnpm --parallel --stream --filter @ai-office/web --filter @ai-office/api --filter @ai-office/worker dev",
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm --filter @ai-office/contracts build && pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "build": "pnpm -r --if-present run build",
+    "format:check": "prettier --check .",
+    "db:migrate": "pnpm --filter @ai-office/db migrate",
+    "db:seed": "pnpm --filter @ai-office/db seed",
+    "worker:smoke": "pnpm --filter @ai-office/worker smoke",
+    "test:providers": "pnpm --filter @ai-office/agent-core test:providers",
+    "test:e2e": "pnpm --filter @ai-office/web test:e2e",
+    "test:scene": "pnpm --filter @ai-office/web test:scene",
+    "test:integration": "pnpm --filter @ai-office/api test:integration"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@types/node": "^22.15.3",
+    "eslint": "^9.36.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.44.0",
+    "vitest": "^3.2.4"
+  }
+}
