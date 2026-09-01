@@ -1,4 +1,4 @@
-const apiOrigin = process.env.NEXT_PUBLIC_API_ORIGIN ?? 'http://localhost:3001';
+const apiOrigin = process.env.NEXT_PUBLIC_API_ORIGIN ?? 'http://127.0.0.1:3001';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

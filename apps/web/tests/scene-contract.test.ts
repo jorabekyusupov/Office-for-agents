@@ -201,4 +201,37 @@ describe('scene contract', () => {
     });
     expect(defaultGraphicsQuality(true)).toBe('low');
   });
+
+  it('maps tool activity hints accurately to human-readable activities', () => {
+    const terminalRun = mapRunsToSceneOccupants([
+      {
+        id: 'term',
+        status: 'WORKING',
+        agent: { name: 'Codex', provider: 'OPENAI' },
+        task: { title: 'Run bash', events: [{ payload: { toolName: 'exec_command' } }] }
+      }
+    ])[0]!;
+    expect(terminalRun.activity).toBe('Terminal buyruqlarini bajarmoqda');
+
+    const patchRun = mapRunsToSceneOccupants([
+      {
+        id: 'patch',
+        status: 'WORKING',
+        agent: { name: 'Claude', provider: 'ANTHROPIC' },
+        task: { title: 'Edit code', events: [{ payload: { toolName: 'apply_patch' } }] }
+      }
+    ])[0]!;
+    expect(patchRun.activity).toBe('Kod fayllarini yangilamoqda');
+
+    const imageRun = mapRunsToSceneOccupants([
+      {
+        id: 'img',
+        status: 'WORKING',
+        agent: { name: 'Gemini', provider: 'GOOGLE' },
+        task: { title: 'Generate asset', events: [{ payload: { toolName: 'generate_image' } }] }
+      }
+    ])[0]!;
+    expect(imageRun.activity).toBe('Vizual yaratmoqda');
+  });
 });
+
