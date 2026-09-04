@@ -2,25 +2,34 @@ import type { RoomAnchor, SceneOccupant } from './room-semantics';
 
 export type ScenePoint = readonly [number, number, number];
 
-const deskAnchors: readonly ScenePoint[] = [
-  [-5.4, 0.47, -1.92],
-  [-2.7, 0.47, -1.92],
-  [0, 0.47, -1.92],
-  [2.7, 0.47, -1.92],
-  [5.4, 0.47, -1.92],
-  [-4.05, 0.47, 1.02],
-  [-1.35, 0.47, 1.02],
-  [1.35, 0.47, 1.02],
-  [4.05, 0.47, 1.02]
-];
+export const visibleDeskCapacity = 20;
+export const maximumDeskCapacity = 50;
+
+const deskColumns = 10;
+const deskColumnGap = 2.55;
+const deskRowGap = 3;
+
+export function deskLayoutFor(slot: number): {
+  position: readonly [number, number];
+  rotation: number;
+} {
+  const normalizedSlot = Math.abs(slot) % maximumDeskCapacity;
+  const column = normalizedSlot % deskColumns;
+  const row = Math.floor(normalizedSlot / deskColumns);
+  return {
+    position: [(column - (deskColumns - 1) / 2) * deskColumnGap, -6.8 + row * deskRowGap],
+    rotation: 0
+  };
+}
 const zoneOrigins: Record<Exclude<RoomAnchor, 'desk' | 'arrival'>, ScenePoint> = {
-  research_board: [-5.65, 0.47, -4.7],
-  review_station: [-1.5, 0.47, 3.8],
-  waiting_area: [4.8, 0.47, 2.2],
-  help_beacon: [6.25, 0.47, 4.9],
-  delivery_shelf: [6.9, 0.47, -5.15]
+  research_board: [-11.6, 0.47, -7.7],
+  review_station: [-2.2, 0.47, 7.8],
+  waiting_area: [10.4, 0.47, -3.1],
+  help_beacon: [11.2, 0.47, 7.2],
+  delivery_shelf: [11.7, 0.47, -8]
 };
-const entrance: ScenePoint = [-8.1, 0.47, -5.45];
+const entrance: ScenePoint = [-16.2, 0.47, -7.8];
+const doorway: ScenePoint = [-13.8, 0.47, -7.8];
 const laneOffsets: readonly ScenePoint[] = [
   [0, 0, 0],
   [0.68, 0, 0],
@@ -37,7 +46,8 @@ const offsetPoint = (origin: ScenePoint, slot: number): ScenePoint => {
 };
 
 export function deskPoint(slot: number): ScenePoint {
-  return deskAnchors[slot % deskAnchors.length] ?? deskAnchors[0] ?? [0, 0.47, 0];
+  const desk = deskLayoutFor(slot);
+  return [desk.position[0], 0.47, desk.position[1] + 0.63];
 }
 
 export function targetPointFor(occupant: Pick<SceneOccupant, 'anchor' | 'roomAnchor'>): ScenePoint {
@@ -54,6 +64,27 @@ export function initialPointFor(
     : targetPointFor(occupant);
 }
 
+export function motionWaypointsFor(
+  occupant: Pick<SceneOccupant, 'anchor' | 'roomAnchor' | 'transition'>
+): ScenePoint[] {
+  const operationalTarget = targetPointFor(occupant);
+  if (occupant.transition === 'enter') {
+    return [
+      offsetPoint(entrance, occupant.anchor),
+      offsetPoint(doorway, occupant.anchor),
+      operationalTarget
+    ];
+  }
+  if (occupant.transition === 'exit') {
+    return [offsetPoint(doorway, occupant.anchor), offsetPoint(entrance, occupant.anchor)];
+  }
+  return [operationalTarget];
+}
+
 export function shouldAnimateArrival(occupant: Pick<SceneOccupant, 'transition'>) {
   return occupant.transition === 'enter';
+}
+
+export function shouldAnimateDeparture(occupant: Pick<SceneOccupant, 'transition'>) {
+  return occupant.transition === 'exit';
 }

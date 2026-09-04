@@ -16,14 +16,13 @@ type Snapshot = {
     runs: {
       id: string;
       status: string;
+      updatedAt: string;
       agent: { name: string; provider: string };
       task: { title: string; events?: TimelineEvent[] };
     }[];
     artifacts: { id: string; title: string; status: string; runId?: string | null }[];
   };
 };
-type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'offline';
-
 function milestoneFor(event: TimelineEvent) {
   const payload =
     event.payload && typeof event.payload === 'object'
@@ -43,14 +42,14 @@ function SceneRoom() {
   const workspaceId = params.get('workspace');
   const projectId = params.get('project');
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [selectedAgent, setSelectedAgent] = useState<SceneOccupant>();
   const [selectedArtifact, setSelectedArtifact] = useState<RoomArtifact>();
   const [prompt, setPrompt] = useState('');
-  const [notice, setNotice] = useState('');
   const lastSequence = useRef(0);
   const hasSnapshot = useRef(false);
+  const previousRunStatuses = useRef(new Map<string, string>());
+  const departingRunIds = useRef(new Set<string>());
 
   const loadSnapshot = useCallback(async () => {
     if (!workspaceId || !projectId) {
@@ -67,7 +66,6 @@ function SceneRoom() {
       hasSnapshot.current = true;
       setState('ready');
     } catch {
-      setConnection(navigator.onLine ? 'reconnecting' : 'offline');
       if (!hasSnapshot.current) setState('error');
     }
   }, [projectId, workspaceId]);
@@ -84,7 +82,6 @@ function SceneRoom() {
       withCredentials: true,
       reconnection: true
     });
-    setConnection('connecting');
     socket.on('connect', () => {
       socket.emit(
         'project:subscribe',
@@ -94,14 +91,10 @@ function SceneRoom() {
           if (result.snapshot) {
             setSnapshot(result.snapshot);
             setState('ready');
-            setConnection('live');
-          } else if (result.error) setConnection('offline');
+          }
         }
       );
     });
-    socket.on('disconnect', () => setConnection(navigator.onLine ? 'reconnecting' : 'offline'));
-    socket.on('reconnect_attempt', () => setConnection('reconnecting'));
-    socket.on('connect_error', () => setConnection(navigator.onLine ? 'reconnecting' : 'offline'));
     socket.on('office:event', (event: OfficeEvent) => {
       const result = reconcileEvent(lastSequence.current, event);
       if (result.kind === 'duplicate') return;
@@ -112,6 +105,11 @@ function SceneRoom() {
       socket.close();
     };
   }, [loadSnapshot, projectId, workspaceId]);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    previousRunStatuses.current = new Map(snapshot.project.runs.map((run) => [run.id, run.status]));
+  }, [snapshot]);
 
   if (state === 'loading')
     return (
@@ -137,19 +135,38 @@ function SceneRoom() {
     );
 
   const artifacts: RoomArtifact[] = snapshot.project.artifacts;
-  const occupants: SceneOccupant[] = mapRunsToSceneOccupants(snapshot.project.runs, artifacts);
-  const activeRuns = occupants.filter((occupant) =>
-    ['WORKING', 'STARTING'].includes(occupant.status)
-  ).length;
+  const activeStatuses = new Set([
+    'QUEUED',
+    'STARTING',
+    'WORKING',
+    'WAITING',
+    'WAITING_INPUT',
+    'BLOCKED',
+    'FAILED'
+  ]);
+  const terminalStatuses = new Set(['COMPLETED', 'CANCELLED']);
+  for (const run of snapshot.project.runs) {
+    const previousStatus = previousRunStatuses.current.get(run.id);
+    if (
+      terminalStatuses.has(run.status) &&
+      previousStatus !== undefined &&
+      activeStatuses.has(previousStatus)
+    ) {
+      departingRunIds.current.add(run.id);
+    } else if (activeStatuses.has(run.status)) {
+      departingRunIds.current.delete(run.id);
+    }
+  }
+  const visibleRuns = snapshot.project.runs.filter(
+    (run) => activeStatuses.has(run.status) || departingRunIds.current.has(run.id)
+  );
+  const occupants: SceneOccupant[] = mapRunsToSceneOccupants(visibleRuns, artifacts).map(
+    (occupant) =>
+      activeStatuses.has(occupant.status) && !previousRunStatuses.current.has(occupant.id)
+        ? { ...occupant, pose: 'walking' as const, transition: 'enter' as const }
+        : occupant
+  );
   const selectedRun = snapshot.project.runs.find((run) => run.id === selectedAgent?.id);
-  const statusCopy =
-    connection === 'live'
-      ? 'Live room sync'
-      : connection === 'connecting'
-        ? 'Connecting room sync…'
-        : connection === 'reconnecting'
-          ? 'Reconnecting — showing last known state'
-          : 'Offline — showing last known state';
 
   async function dispatch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -161,11 +178,6 @@ function SceneRoom() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ content, idempotencyKey: crypto.randomUUID() })
     });
-    setNotice(
-      response.ok
-        ? 'Dispatch qabul qilindi: agent run navbatga qo‘yildi.'
-        : 'Dispatch yuborilmadi. Qayta urinib ko‘ring.'
-    );
     if (response.ok) {
       setPrompt('');
       await loadSnapshot();
@@ -174,31 +186,6 @@ function SceneRoom() {
 
   return (
     <main className="scene-page scene-simulator-page">
-      <header className="scene-header">
-        <a className="scene-back" href="/office">
-          ← Back to control center
-        </a>
-        <div className="scene-heading">
-          <div>
-            <p className="scene-kicker">PROJECT ROOM / LIVE VIEW</p>
-            <h1>{snapshot.project.name}</h1>
-            <p>
-              Room layout v{snapshot.project.room?.layoutVersion ?? 1} · {statusCopy}
-            </p>
-          </div>
-          <div className="scene-stats">
-            <span>
-              <b>{activeRuns}</b> active
-            </span>
-            <span>
-              <b>{occupants.length}</b> runs
-            </span>
-            <span>
-              <b>{artifacts.length}</b> artifacts
-            </span>
-          </div>
-        </div>
-      </header>
       <div className="scene-simulator-shell">
         <OfficeScene
           occupants={occupants}
@@ -296,81 +283,6 @@ function SceneRoom() {
           </aside>
         )}
       </div>
-      <section className="sim-dispatcher" aria-label="Task dispatcher">
-        <form onSubmit={dispatch}>
-          <label>
-            <span>🚀</span>
-            <input
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              maxLength={2_000}
-              placeholder="AI agentlar jamoasiga haqiqiy task yuboring…"
-            />
-          </label>
-          <button type="submit">DISPATCH SPRINT</button>
-        </form>
-        <div>
-          {['UI ni tekshir', 'Statusni tahlil qil', 'Artifactlarni ko‘rib chiq'].map((value) => (
-            <button key={value} type="button" onClick={() => setPrompt(value)}>
-              {value}
-            </button>
-          ))}
-        </div>
-        {notice && <p role="status">{notice}</p>}
-        {connection !== 'live' && (
-          <p className="sim-connection" role="status">
-            {statusCopy}{' '}
-            <button type="button" onClick={() => void loadSnapshot()}>
-              Retry now
-            </button>
-          </p>
-        )}
-      </section>
-      <section className="scene-accessible" aria-labelledby="room-details-title">
-        <div>
-          <p className="scene-kicker">ACCESSIBLE ROOM DIRECTORY</p>
-          <h2 id="room-details-title">Agent desks</h2>
-          <p>
-            Every desk is mapped from a live agent run. The room visual never creates synthetic
-            work.
-          </p>
-        </div>
-        <div className="scene-agent-list">
-          {occupants.length ? (
-            occupants.map((occupant) => (
-              <article key={occupant.id}>
-                <i style={{ backgroundColor: occupant.color }} />
-                <div>
-                  <b>
-                    {occupant.agentName} · {occupant.activity}
-                  </b>
-                  <small>{occupant.name}</small>
-                </div>
-              </article>
-            ))
-          ) : (
-            <p>No agent runs have been assigned to this project.</p>
-          )}
-        </div>
-        <div className="scene-artifact-list" aria-label="Authorized artifacts">
-          {artifacts
-            .filter((artifact) => ['READY', 'APPROVED'].includes(artifact.status.toUpperCase()))
-            .map((artifact) => (
-              <a
-                key={artifact.id}
-                href={`/api/workspaces/${workspaceId}/projects/${projectId}/artifacts/${artifact.id}`}
-              >
-                {artifact.title} · {artifact.status.toLowerCase()}
-              </a>
-            ))}
-          {!artifacts.some((artifact) =>
-            ['READY', 'APPROVED'].includes(artifact.status.toUpperCase())
-          ) && <span>No authorized artifact on the delivery shelf.</span>}
-        </div>
-        <a className="scene-open-control" href="/office">
-          Open tasks, chat and artifacts in 2D →
-        </a>
-      </section>
     </main>
   );
 }

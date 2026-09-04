@@ -10,6 +10,7 @@ coverage/
 postgres-data/
 redis-data/
 apps/api/src/generated/
+apps/api/.office-bridge-target.json
 output/playwright/auth-state.json
 .playwright-cli/
 **/test-results/

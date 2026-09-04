@@ -15,7 +15,7 @@ export type RoomPose =
   | 'alert'
   | 'acknowledging'
   | 'idle';
-export type RoomTransition = 'enter' | 'move' | 'hold' | 'acknowledge';
+export type RoomTransition = 'enter' | 'exit' | 'move' | 'hold' | 'acknowledge';
 
 export type SceneOccupant = {
   id: string;
@@ -64,6 +64,7 @@ export function behaviorForRun(
   hasReadyArtifact: boolean
 ): RoomBehavior {
   switch (canonicalStatus(status)) {
+    case 'QUEUED':
     case 'STARTING':
       return { roomAnchor: 'arrival', pose: 'walking', transition: 'enter' };
     case 'WORKING':
@@ -77,12 +78,15 @@ export function behaviorForRun(
       return { roomAnchor: 'waiting_area', pose: 'waiting', transition: 'hold' };
     case 'BLOCKED':
     case 'FAILED':
-    case 'CANCELLED':
       return { roomAnchor: 'help_beacon', pose: 'alert', transition: 'hold' };
+    case 'CANCELLED':
+      return { roomAnchor: 'desk', pose: 'walking', transition: 'exit' };
     case 'COMPLETED':
-      return hasReadyArtifact
-        ? { roomAnchor: 'delivery_shelf', pose: 'acknowledging', transition: 'acknowledge' }
-        : { roomAnchor: 'desk', pose: 'acknowledging', transition: 'acknowledge' };
+      return {
+        roomAnchor: hasReadyArtifact ? 'delivery_shelf' : 'desk',
+        pose: 'walking',
+        transition: 'exit'
+      };
     default:
       return { roomAnchor: 'desk', pose: 'idle', transition: 'hold' };
   }

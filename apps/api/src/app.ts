@@ -12,6 +12,12 @@ import { currentUserId, isSuperAdmin, mayInviteToWorkspace, workspaceRole } from
 import { incrementMetric, metricsSnapshot } from './metrics.js';
 import { providers, providerPolicy } from '@ai-office/agent-core';
 import { isValidCodexBridgeSignature, recordCodexHookEvent } from './codex-bridge.js';
+import {
+  connectCodexTarget,
+  integrationStatuses,
+  type IntegrationId
+} from './integration-status.js';
+import { syncCodexDesktopSessions } from './codex-session-sync.js';
 
 export async function buildApp() {
   const app = Fastify({ logger: false });
@@ -50,6 +56,92 @@ export async function buildApp() {
     const memberships = await prisma.workspaceMember.findMany({ where: { userId }, select: { role: true } });
     if (!memberships.some(item => item.role === 'OWNER' || item.role === 'ADMIN')) return reply.status(403).send({ error: 'workspace_operator_required' });
     return { providers: providers.map(provider => ({ ...provider.health(), policy: providerPolicy(provider.name) })) };
+  });
+
+  app.get<{ Params: { workspaceId: string }; Querystring: { projectId?: string } }>(
+    '/api/workspaces/:workspaceId/integrations',
+    async (request, reply) => {
+      const userId = await currentUserId(request);
+      if (!userId) return reply.status(401).send({ error: 'unauthorized' });
+      const role = await workspaceRole(request.params.workspaceId, userId);
+      if (!role || role === 'MEMBER') {
+        return reply.status(403).send({ error: 'workspace_operator_required' });
+      }
+      if (request.query.projectId) {
+        const project = await prisma.project.findFirst({
+          where: { id: request.query.projectId, workspaceId: request.params.workspaceId },
+          select: { id: true }
+        });
+        if (!project) return reply.status(404).send({ error: 'project_not_found' });
+      }
+      const agents = await prisma.agent.findMany({
+        where: { workspaceId: request.params.workspaceId },
+        select: { provider: true }
+      });
+      const connected: IntegrationId[] = [
+        ...(agents.some((agent) => agent.provider === 'ANTHROPIC') ? (['claude'] as const) : []),
+        ...(agents.some((agent) => agent.provider === 'GOOGLE') ? (['gemini'] as const) : [])
+      ];
+      return {
+        integrations: await integrationStatuses({
+          workspaceId: request.params.workspaceId,
+          projectId: request.query.projectId,
+          connected
+        })
+      };
+    }
+  );
+
+  app.post<{
+    Params: { workspaceId: string; integrationId: IntegrationId };
+    Body: { projectId?: unknown };
+  }>('/api/workspaces/:workspaceId/integrations/:integrationId/connect', async (request, reply) => {
+    const userId = await currentUserId(request);
+    if (!userId) return reply.status(401).send({ error: 'unauthorized' });
+    const role = await workspaceRole(request.params.workspaceId, userId);
+    if (!role || role === 'MEMBER') {
+      return reply.status(403).send({ error: 'workspace_operator_required' });
+    }
+    const projectId = typeof request.body?.projectId === 'string' ? request.body.projectId : '';
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, workspaceId: request.params.workspaceId },
+      select: { id: true }
+    });
+    if (!project) return reply.status(404).send({ error: 'project_not_found' });
+    const available = await integrationStatuses({
+      workspaceId: request.params.workspaceId,
+      projectId
+    });
+    const integration = available.find((item) => item.id === request.params.integrationId);
+    if (!integration) return reply.status(404).send({ error: 'integration_not_found' });
+    if (!integration.canConnect) {
+      return reply.status(409).send({ error: 'integration_not_configured', integration });
+    }
+    const agentConfig = {
+      codex: { name: 'Codex Desktop', provider: 'OPENAI' as const },
+      claude: { name: 'Claude', provider: 'ANTHROPIC' as const },
+      gemini: { name: 'Gemini', provider: 'GOOGLE' as const }
+    }[request.params.integrationId];
+    await prisma.agent.upsert({
+      where: {
+        workspaceId_name: { workspaceId: request.params.workspaceId, name: agentConfig.name }
+      },
+      create: { workspaceId: request.params.workspaceId, ...agentConfig },
+      update: { provider: agentConfig.provider }
+    });
+    if (request.params.integrationId === 'codex') {
+      await connectCodexTarget({ workspaceId: request.params.workspaceId, projectId });
+    }
+    return reply.status(200).send({
+      connected: true,
+      integration: (
+        await integrationStatuses({
+          workspaceId: request.params.workspaceId,
+          projectId,
+          connected: [request.params.integrationId]
+        })
+      ).find((item) => item.id === request.params.integrationId)
+    });
   });
 
   app.get('/api/me', async (request, reply) => {
@@ -143,6 +235,10 @@ export async function buildApp() {
     const userId = await currentUserId(request);
     if (!userId) return reply.status(401).send({ error: 'unauthorized' });
     if (!(await workspaceRole(request.params.workspaceId, userId))) return reply.status(403).send({ error: 'workspace_access_denied' });
+    await syncCodexDesktopSessions({
+      workspaceId: request.params.workspaceId,
+      projectId: request.params.projectId
+    });
     const snapshot = await projectSnapshot(request.params.workspaceId, request.params.projectId);
     if (!snapshot) return reply.status(404).send({ error: 'project_not_found' });
     return { ...snapshot, schemaVersion: 1 };

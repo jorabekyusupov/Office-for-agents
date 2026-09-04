@@ -58,6 +58,8 @@ for (const viewport of [
       await page.getByRole('button', { name: 'Create project' }).click();
       await expect(page.getByText('Project created.')).toBeVisible();
       await expect(page.getByRole('heading', { name: 'Browser workflow' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'AI tool sozlamalari' })).toBeVisible();
+      await expect(page.locator('.integration-card').filter({ hasText: 'Codex Desktop' })).toBeVisible();
       await page.getByLabel('Request').fill('Create a delivery artifact');
       await page.getByRole('button', { name: 'Send to agents' }).click();
       await expect(page.getByText('Request sent; an agent run is now queued.')).toBeVisible();
@@ -68,7 +70,11 @@ for (const viewport of [
         timeout: 10_000
       });
       await page.getByRole('link', { name: 'Open 3D room' }).click();
-      await expect(page.getByRole('heading', { name: 'Browser workflow' })).toBeVisible();
+      const simulator = page.getByLabel('3D project office');
+      await expect(simulator).toBeVisible();
+      const simulatorBox = await simulator.boundingBox();
+      expect(simulatorBox?.width).toBeGreaterThanOrEqual(viewport.width - 1);
+      expect(simulatorBox?.height).toBeGreaterThanOrEqual(viewport.height - 1);
       for (let cycle = 0; cycle < 10; cycle += 1) {
         await page.reload();
         await expect(page.locator('canvas')).toHaveCount(1);

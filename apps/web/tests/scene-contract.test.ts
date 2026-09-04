@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { mapRunsToSceneOccupants } from '../app/scene-mapper.js';
-import { initialPointFor, targetPointFor } from '../app/scene-motion.js';
+import {
+  initialPointFor,
+  motionWaypointsFor,
+  shouldAnimateDeparture,
+  targetPointFor
+} from '../app/scene-motion.js';
 import { defaultGraphicsQuality, graphicsProfileFor } from '../app/scene-quality.js';
 
 describe('scene contract', () => {
@@ -59,8 +64,8 @@ describe('scene contract', () => {
       ['WAITING_INPUT', 'waiting_area', 'waiting'],
       ['BLOCKED', 'help_beacon', 'alert'],
       ['FAILED', 'help_beacon', 'alert'],
-      ['CANCELLED', 'help_beacon', 'alert'],
-      ['COMPLETED', 'desk', 'acknowledging']
+      ['CANCELLED', 'desk', 'walking'],
+      ['COMPLETED', 'desk', 'walking']
     ]);
   });
 
@@ -152,8 +157,12 @@ describe('scene contract', () => {
     ])[0];
     expect(starting).toBeDefined();
     expect(initialPointFor(starting!)).not.toEqual(targetPointFor(starting!));
+    const entryPath = motionWaypointsFor(starting!);
+    expect(entryPath).toHaveLength(3);
+    expect(entryPath[0]).toEqual(initialPointFor(starting!));
+    expect(entryPath.at(-1)).toEqual(targetPointFor(starting!));
     const active = mapRunsToSceneOccupants(
-      ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((id) => ({
+      Array.from({ length: 50 }, (_, index) => `agent-${index + 1}`).map((id) => ({
         id,
         status: 'WORKING',
         agent: { name: id, provider: 'OPENAI' },
@@ -163,6 +172,22 @@ describe('scene contract', () => {
     expect(new Set(active.map(targetPointFor).map((point) => point.join(':'))).size).toBe(
       active.length
     );
+  });
+
+  it('routes completed and cancelled runs through the doorway before leaving the room', () => {
+    const departing = mapRunsToSceneOccupants([
+      {
+        id: 'done',
+        status: 'COMPLETED',
+        agent: { name: 'Codex', provider: 'OPENAI' },
+        task: { title: 'Delivered' }
+      }
+    ])[0]!;
+    expect(shouldAnimateDeparture(departing)).toBe(true);
+    expect(initialPointFor(departing)).toEqual(targetPointFor(departing));
+    const exitPath = motionWaypointsFor(departing);
+    expect(exitPath).toHaveLength(2);
+    expect(exitPath.at(-1)).not.toEqual(targetPointFor(departing));
   });
 
   it('uses the authoritative target on refresh and derives a new target when status changes', () => {
@@ -234,4 +259,3 @@ describe('scene contract', () => {
     expect(imageRun.activity).toBe('Vizual yaratmoqda');
   });
 });
-

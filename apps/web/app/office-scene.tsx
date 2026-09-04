@@ -13,7 +13,15 @@ import {
   Vector3
 } from 'three';
 import type { SceneOccupant } from './room-semantics';
-import { initialPointFor, targetPointFor } from './scene-motion';
+import {
+  deskLayoutFor,
+  deskPoint,
+  initialPointFor,
+  maximumDeskCapacity,
+  motionWaypointsFor,
+  targetPointFor,
+  visibleDeskCapacity
+} from './scene-motion';
 import { defaultGraphicsQuality, graphicsProfileFor, type GraphicsQuality } from './scene-quality';
 
 export type { SceneOccupant } from './room-semantics';
@@ -63,7 +71,11 @@ const activityLabel = (status: string) =>
 
 const statusEmoji = (occupant: SceneOccupant) => {
   if (occupant.status === 'COMPLETED') return '🎉';
-  if (occupant.status === 'FAILED' || occupant.status === 'BLOCKED' || occupant.status === 'CANCELLED')
+  if (
+    occupant.status === 'FAILED' ||
+    occupant.status === 'BLOCKED' ||
+    occupant.status === 'CANCELLED'
+  )
     return '🔥';
   if (occupant.status === 'WAITING_INPUT' || occupant.status === 'WAITING') return '💭';
   if (occupant.status === 'STARTING') return '💡';
@@ -253,45 +265,36 @@ function CameraController({
   selectedAgent?: SceneOccupant | undefined;
 }) {
   const { camera } = useThree();
-  const currentPos = useRef(new Vector3(0, 8.5, 12.5));
+  const currentPos = useRef(new Vector3(0, 13.5, 20.5));
   const currentTarget = useRef(new Vector3(0, 0.8, -0.55));
 
-  const deskAnchors: [number, number, number][] = [
-    [-5.4, 0, -2.55],
-    [-2.7, 0, -2.55],
-    [0, 0, -2.55],
-    [2.7, 0, -2.55],
-    [5.4, 0, -2.55],
-    [-4.05, 0, 0.45],
-    [-1.35, 0, 0.45],
-    [1.35, 0, 0.45],
-    [4.05, 0, 0.45]
-  ];
-
-  const presetPositions: Record<CameraPreset, [[number, number, number], [number, number, number]]> = {
+  const presetPositions: Record<
+    CameraPreset,
+    [[number, number, number], [number, number, number]]
+  > = {
     overview: [
-      [0, 8.5, 12.5],
+      [0, 13.5, 20.5],
       [0, 0.8, -0.55]
     ],
     desks: [
-      [0, 5.8, 8.8],
-      [0, 0.8, -2]
+      [0, 10.5, 15.5],
+      [0, 0.8, -3]
     ],
     briefing: [
-      [-6.8, 4.8, -1.8],
-      [-5.8, 1.05, -4.8]
+      [-12.8, 5.4, -2.8],
+      [-11.8, 1.05, -8.2]
     ],
     meeting: [
-      [-4.2, 5.5, 9.6],
-      [0, 0.6, 4]
+      [-5.2, 6.5, 15],
+      [0, 0.6, 8.1]
     ],
     server: [
-      [8.8, 5.4, 9],
-      [6.4, 1, 4.4]
+      [14.8, 6.2, 14],
+      [11.2, 1, 7.7]
     ],
     lounge: [
-      [8.6, 4.6, 2.3],
-      [6, 0.8, -2.4]
+      [15.2, 5.4, 3.2],
+      [11.1, 0.8, -3.8]
     ]
   };
 
@@ -300,7 +303,7 @@ function CameraController({
     let lookTarget: [number, number, number];
 
     if (selectedAgent) {
-      const anchor = deskAnchors[selectedAgent.anchor % deskAnchors.length] ?? [0, 0, 0];
+      const anchor = deskPoint(selectedAgent.anchor);
       targetPos = [anchor[0], 2.8, anchor[2] + 4.2];
       lookTarget = [anchor[0], 0.9, anchor[2]];
     } else {
@@ -325,13 +328,7 @@ function CameraController({
 /* -------------------------------------------------------------------------- */
 /* Ergonomic Swivel Mesh Office Chair                                         */
 /* -------------------------------------------------------------------------- */
-function OfficeChair({
-  color = '#25354a',
-  swivel = 0
-}: {
-  color?: string;
-  swivel?: number;
-}) {
+function OfficeChair({ color = '#25354a', swivel = 0 }: { color?: string; swivel?: number }) {
   const chairSwivel = useRef<Group>(null);
 
   useFrame((_, delta) => {
@@ -426,12 +423,14 @@ function AgentAvatar({
   occupant,
   motionRate,
   motionEnabled,
-  soundOn
+  soundOn,
+  onDepartureComplete
 }: {
   occupant: SceneOccupant;
   motionRate: number;
   motionEnabled: boolean;
   soundOn: boolean;
+  onDepartureComplete?: ((occupantId: string) => void) | undefined;
 }) {
   const avatar = useRef<Group>(null);
   const body = useRef<Group>(null);
@@ -445,8 +444,12 @@ function AgentAvatar({
   const skin = ['#f1c6a9', '#d99b78', '#b97857', '#8f543d'][occupant.anchor % 4] ?? '#d99b78';
   const hair = ['#2b1b18', '#342622', '#151821', '#634234'][occupant.anchor % 4] ?? '#342622';
   const target = useRef(new Vector3(...targetPointFor(occupant)));
+  const waypoints = useRef<Vector3[]>([]);
+  const waypointIndex = useRef(0);
+  const departureReported = useRef(false);
   const initialized = useRef(false);
   const travel = useRef(false);
+  const walkingSpeed = useRef(0);
   const walkingDirection = useRef(new Vector3());
   const pose = occupant.pose;
   const isAtDesk = occupant.roomAnchor === 'desk' || occupant.roomAnchor === 'arrival';
@@ -454,10 +457,17 @@ function AgentAvatar({
 
   useEffect(() => {
     const root = avatar.current;
-    target.current.set(...targetPointFor(occupant));
-    if (!root || initialized.current) return;
-    root.position.set(...initialPointFor(occupant));
-    initialized.current = true;
+    const nextWaypoints = motionWaypointsFor(occupant).map((point) => new Vector3(...point));
+    waypoints.current = nextWaypoints;
+    waypointIndex.current = occupant.transition === 'enter' && nextWaypoints.length > 1 ? 1 : 0;
+    target.current.copy(
+      nextWaypoints[waypointIndex.current] ?? new Vector3(...targetPointFor(occupant))
+    );
+    departureReported.current = false;
+    if (root && !initialized.current) {
+      root.position.set(...initialPointFor(occupant));
+      initialized.current = true;
+    }
   }, [occupant]);
 
   // Audio typing bursts
@@ -480,16 +490,37 @@ function AgentAvatar({
     if (!motionEnabled) root.position.copy(target.current);
 
     if (travel.current) {
+      const desiredSpeed = Math.min(1.15, Math.max(0.18, distance * 0.9));
+      walkingSpeed.current = MathUtils.damp(
+        walkingSpeed.current,
+        desiredSpeed,
+        distance < 1 ? 4.2 : 2.4,
+        delta
+      );
       walkingDirection.current.normalize();
       root.position.addScaledVector(
         walkingDirection.current,
-        Math.min(distance, 2.45 * motionRate * delta)
+        Math.min(distance, walkingSpeed.current * delta)
       );
       const facing = Math.atan2(walkingDirection.current.x, walkingDirection.current.z);
-      root.rotation.y = MathUtils.damp(root.rotation.y, facing, 12, delta);
+      root.rotation.y = MathUtils.damp(root.rotation.y, facing, 6.5, delta);
     } else if (isAtDesk) {
+      walkingSpeed.current = MathUtils.damp(walkingSpeed.current, 0, 5, delta);
       // Align facing forward when seated
       root.rotation.y = MathUtils.damp(root.rotation.y, 0, 8, delta);
+    } else {
+      walkingSpeed.current = MathUtils.damp(walkingSpeed.current, 0, 5, delta);
+    }
+
+    if (root.position.distanceTo(target.current) <= 0.035) {
+      const nextWaypoint = waypointIndex.current + 1;
+      if (nextWaypoint < waypoints.current.length) {
+        waypointIndex.current = nextWaypoint;
+        target.current.copy(waypoints.current[nextWaypoint]!);
+      } else if (occupant.transition === 'exit' && !departureReported.current) {
+        departureReported.current = true;
+        onDepartureComplete?.(occupant.id);
+      }
     }
 
     const animationTime = motionEnabled ? time : 0;
@@ -510,6 +541,10 @@ function AgentAvatar({
         : breathing;
 
     body.current.position.z = sitting ? 0.44 : 0;
+    body.current.rotation.x = walking ? MathUtils.damp(body.current.rotation.x, -0.055, 6, delta) : MathUtils.damp(body.current.rotation.x, 0, 6, delta);
+    body.current.rotation.z = walking
+      ? Math.sin(animationTime * 7) * 0.025
+      : MathUtils.damp(body.current.rotation.z, 0, 6, delta);
 
     // Head subtle micro-movements & gaze
     if (head.current) {
@@ -620,78 +655,122 @@ function AgentAvatar({
 
   return (
     <group ref={avatar}>
-      <group ref={body} scale={1.15}>
-        {/* Left Leg with Upper & Lower Segment */}
-        <group ref={leftLeg} position={[-0.12, 0.08, 0]}>
-          <mesh position={[0, -0.16, 0]} castShadow>
-            <capsuleGeometry args={[0.065, 0.28, 6, 10]} />
-            <meshStandardMaterial color="#25354a" roughness={0.74} />
-          </mesh>
-          <mesh position={[0, -0.35, 0.035]} castShadow>
-            <boxGeometry args={[0.12, 0.06, 0.19]} />
-            <meshStandardMaterial color="#101827" />
-          </mesh>
-        </group>
+      <group ref={body} scale={1.22}>
+        {/* Pelvis and articulated legs create a readable human silhouette. */}
+        <mesh position={[0, 0.08, 0]} castShadow>
+          <capsuleGeometry args={[0.165, 0.16, 8, 14]} />
+          <meshStandardMaterial color="#24344a" roughness={0.78} />
+        </mesh>
+        {[
+          { side: -1, ref: leftLeg },
+          { side: 1, ref: rightLeg }
+        ].map(({ side, ref }) => (
+          <group key={side} ref={ref} position={[side * 0.105, 0.03, 0]}>
+            <mesh position={[0, -0.19, 0]} castShadow>
+              <capsuleGeometry args={[0.072, 0.28, 8, 12]} />
+              <meshStandardMaterial color="#293b54" roughness={0.76} />
+            </mesh>
+            <mesh position={[0, -0.385, 0.008]} castShadow>
+              <capsuleGeometry args={[0.061, 0.24, 8, 12]} />
+              <meshStandardMaterial color="#203047" roughness={0.8} />
+            </mesh>
+            <mesh position={[0, -0.535, -0.048]} rotation-x={Math.PI / 2} castShadow>
+              <capsuleGeometry args={[0.068, 0.13, 6, 12]} />
+              <meshStandardMaterial color="#0c1422" roughness={0.5} metalness={0.12} />
+            </mesh>
+            <mesh position={[0, -0.51, 0]}>
+              <sphereGeometry args={[0.065, 12, 10]} />
+              <meshStandardMaterial color="#18253a" roughness={0.75} />
+            </mesh>
+          </group>
+        ))}
 
-        {/* Right Leg with Upper & Lower Segment */}
-        <group ref={rightLeg} position={[0.12, 0.08, 0]}>
-          <mesh position={[0, -0.16, 0]} castShadow>
-            <capsuleGeometry args={[0.065, 0.28, 6, 10]} />
-            <meshStandardMaterial color="#25354a" roughness={0.74} />
-          </mesh>
-          <mesh position={[0, -0.35, 0.035]} castShadow>
-            <boxGeometry args={[0.12, 0.06, 0.19]} />
-            <meshStandardMaterial color="#101827" />
-          </mesh>
-        </group>
-
-        {/* Torso & Shirt */}
-        <mesh position={[0, 0.27, 0]} castShadow>
-          <capsuleGeometry args={[0.18, 0.36, 8, 14]} />
-          <meshStandardMaterial color={occupant.color} roughness={0.58} metalness={0.05} />
+        {/* Tapered torso, shoulders, collar and neck. */}
+        <mesh position={[0, 0.35, 0]} scale={[1.08, 1, 0.72]} castShadow>
+          <capsuleGeometry args={[0.205, 0.36, 10, 18]} />
+          <meshStandardMaterial color={occupant.color} roughness={0.62} metalness={0.03} />
+        </mesh>
+        <mesh position={[0, 0.535, 0]} scale={[1.35, 0.5, 0.8]} castShadow>
+          <capsuleGeometry args={[0.19, 0.19, 8, 16]} />
+          <meshStandardMaterial color={occupant.color} roughness={0.6} />
+        </mesh>
+        <mesh position={[0, 0.64, 0]} castShadow>
+          <cylinderGeometry args={[0.07, 0.082, 0.13, 14]} />
+          <meshStandardMaterial color={skin} roughness={0.72} />
+        </mesh>
+        <mesh position={[0, 0.545, -0.155]} rotation-x={-0.12}>
+          <torusGeometry args={[0.105, 0.018, 8, 24, Math.PI]} />
+          <meshStandardMaterial color="#e7edf7" roughness={0.72} />
         </mesh>
 
-        {/* Left Arm & Hand */}
-        <group ref={leftArm} position={[-0.21, 0.37, -0.01]} rotation-z={0.3}>
-          <mesh position={[0, -0.16, 0]} castShadow>
-            <capsuleGeometry args={[0.055, 0.22, 6, 10]} />
-            <meshStandardMaterial color={occupant.color} roughness={0.62} />
-          </mesh>
-          <mesh position={[0, -0.31, -0.02]}>
-            <sphereGeometry args={[0.066, 12, 12]} />
-            <meshStandardMaterial color={skin} roughness={0.76} />
-          </mesh>
-        </group>
+        {/* Segmented upper arms, forearms, elbows and hands. */}
+        {[
+          { side: -1, ref: leftArm },
+          { side: 1, ref: rightArm }
+        ].map(({ side, ref }) => (
+          <group key={side} ref={ref} position={[side * 0.245, 0.52, 0]} rotation-z={side * -0.16}>
+            <mesh position={[0, -0.145, 0]} castShadow>
+              <capsuleGeometry args={[0.062, 0.2, 8, 12]} />
+              <meshStandardMaterial color={occupant.color} roughness={0.62} />
+            </mesh>
+            <mesh position={[0, -0.275, 0]}>
+              <sphereGeometry args={[0.061, 12, 10]} />
+              <meshStandardMaterial color={skin} roughness={0.74} />
+            </mesh>
+            <mesh position={[0, -0.39, -0.005]} castShadow>
+              <capsuleGeometry args={[0.052, 0.17, 8, 12]} />
+              <meshStandardMaterial color={skin} roughness={0.76} />
+            </mesh>
+            <mesh position={[0, -0.515, -0.012]} scale={[0.82, 1.08, 0.62]}>
+              <sphereGeometry args={[0.067, 14, 12]} />
+              <meshStandardMaterial color={skin} roughness={0.74} />
+            </mesh>
+          </group>
+        ))}
 
-        {/* Right Arm & Hand */}
-        <group ref={rightArm} position={[0.21, 0.37, -0.01]} rotation-z={-0.3}>
-          <mesh position={[0, -0.16, 0]} castShadow>
-            <capsuleGeometry args={[0.055, 0.22, 6, 10]} />
-            <meshStandardMaterial color={occupant.color} roughness={0.62} />
+        {/* Human-like head with jaw, ears, brows, nose and mouth. */}
+        <group ref={head} position={[0, 0.82, 0]}>
+          <mesh scale={[0.88, 1.06, 0.86]} castShadow>
+            <sphereGeometry args={[0.18, 24, 22]} />
+            <meshStandardMaterial color={skin} roughness={0.68} />
           </mesh>
-          <mesh position={[0, -0.31, -0.02]}>
-            <sphereGeometry args={[0.066, 12, 12]} />
-            <meshStandardMaterial color={skin} roughness={0.76} />
+          <mesh position={[0, -0.09, -0.006]} scale={[0.78, 0.58, 0.76]} castShadow>
+            <sphereGeometry args={[0.17, 20, 16]} />
+            <meshStandardMaterial color={skin} roughness={0.7} />
           </mesh>
-        </group>
-
-        {/* Head, Hair & Eyes */}
-        <group ref={head} position={[0, 0.65, 0]}>
-          <mesh castShadow>
-            <sphereGeometry args={[0.155, 20, 18]} />
-            <meshStandardMaterial color={skin} roughness={0.75} />
+          {[-1, 1].map((side) => (
+            <mesh key={side} position={[side * 0.163, 0, 0]} scale={[0.45, 0.86, 0.42]}>
+              <sphereGeometry args={[0.055, 12, 10]} />
+              <meshStandardMaterial color={skin} roughness={0.74} />
+            </mesh>
+          ))}
+          <mesh position={[0, 0.105, 0.012]} scale={[0.92, 0.58, 0.9]} castShadow>
+            <sphereGeometry args={[0.183, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.56]} />
+            <meshStandardMaterial color={hair} roughness={0.86} />
           </mesh>
-          <mesh position={[0, 0.085, -0.01]} castShadow>
-            <sphereGeometry args={[0.158, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.52]} />
-            <meshStandardMaterial color={hair} roughness={0.9} />
+          {[-1, 1].map((side) => (
+            <group key={side}>
+              <mesh position={[side * 0.061, 0.025, -0.157]} scale={[1.3, 0.55, 0.5]}>
+                <sphereGeometry args={[0.021, 12, 10]} />
+                <meshStandardMaterial color="#f5f7fb" roughness={0.55} />
+              </mesh>
+              <mesh position={[side * 0.061, 0.024, -0.169]}>
+                <sphereGeometry args={[0.009, 10, 10]} />
+                <meshStandardMaterial color="#172033" roughness={0.42} />
+              </mesh>
+              <mesh position={[side * 0.061, 0.065, -0.158]} rotation-z={side * -0.08}>
+                <boxGeometry args={[0.065, 0.012, 0.012]} />
+                <meshStandardMaterial color={hair} roughness={0.88} />
+              </mesh>
+            </group>
+          ))}
+          <mesh position={[0, -0.012, -0.177]} rotation-x={-0.18} scale={[0.65, 1, 0.8]}>
+            <coneGeometry args={[0.035, 0.075, 12]} />
+            <meshStandardMaterial color={skin} roughness={0.7} />
           </mesh>
-          <mesh position={[-0.055, 0.005, -0.135]}>
-            <sphereGeometry args={[0.012, 8, 8]} />
-            <meshBasicMaterial color="#172033" />
-          </mesh>
-          <mesh position={[0.055, 0.005, -0.135]}>
-            <sphereGeometry args={[0.012, 8, 8]} />
-            <meshBasicMaterial color="#172033" />
+          <mesh position={[0, -0.092, -0.17]} rotation-x={Math.PI / 2}>
+            <torusGeometry args={[0.035, 0.008, 6, 16, Math.PI]} />
+            <meshStandardMaterial color="#8a463f" roughness={0.8} />
           </mesh>
         </group>
 
@@ -719,26 +798,18 @@ function AgentAvatar({
 /* Workstation Desk with Animated Monitors & Accessories                      */
 /* -------------------------------------------------------------------------- */
 function Desk({
+  slot,
   occupant,
   onSelectAgent
 }: {
-  occupant: SceneOccupant;
+  slot: number;
+  occupant?: SceneOccupant | undefined;
   onSelectAgent?: ((occupant: SceneOccupant) => void) | undefined;
 }) {
-  const anchors: [number, number, number][] = [
-    [-5.4, -2.55, 0],
-    [-2.7, -2.55, 0],
-    [0, -2.55, 0],
-    [2.7, -2.55, 0],
-    [5.4, -2.55, 0],
-    [-4.05, 0.45, Math.PI],
-    [-1.35, 0.45, Math.PI],
-    [1.35, 0.45, Math.PI],
-    [4.05, 0.45, Math.PI]
-  ];
-  const [x, z, rotation] = anchors[occupant.anchor % anchors.length] ?? anchors[0] ?? [0, 0, 0];
-  const signal = statusColor(occupant.status, occupant.color);
-  const isWorking = occupant.status === 'WORKING' || occupant.status === 'STARTING';
+  const layout = deskLayoutFor(slot);
+  const [x, z] = layout.position;
+  const signal = occupant ? statusColor(occupant.status, occupant.color) : '#26384f';
+  const isWorking = occupant?.status === 'WORKING' || occupant?.status === 'STARTING';
   const codeTexture = useAnimatedCodeTexture(signal, isWorking);
   const screenLight = useRef<PointLight>(null);
 
@@ -751,8 +822,9 @@ function Desk({
   return (
     <group
       position={[x, 0, z]}
-      rotation-y={rotation}
+      rotation-y={layout.rotation}
       onClick={(event) => {
+        if (!occupant) return;
         event.stopPropagation();
         onSelectAgent?.(occupant);
       }}
@@ -865,7 +937,7 @@ function Desk({
       </mesh>
 
       {/* Ergonomic Swivel Mesh Office Chair */}
-      <OfficeChair color={occupant.color} swivel={isWorking ? 0.05 : 0} />
+      <OfficeChair color={occupant?.color ?? '#25354a'} swivel={isWorking ? 0.05 : 0} />
     </group>
   );
 }
@@ -929,7 +1001,7 @@ function ServerZone() {
   });
 
   return (
-    <group position={[6.45, 0, 4.45]}>
+    <group position={[11.2, 0, 7.7]}>
       {[-1.05, 0, 1.05].map((offset, index) => (
         <group key={offset} position={[offset, 0, 0]}>
           <mesh position={[0, 1.18, 0]} castShadow>
@@ -980,7 +1052,7 @@ function ServerZone() {
 function CoffeeAndLounge() {
   return (
     <group>
-      <group position={[6.45, 0, -4.6]}>
+      <group position={[11.3, 0, -8.2]}>
         {/* Coffee Bar Counter */}
         <mesh position={[0, 0.58, 0]} castShadow>
           <boxGeometry args={[3.3, 1.16, 0.78]} />
@@ -1012,26 +1084,6 @@ function CoffeeAndLounge() {
           <meshStandardMaterial color="#f1e7da" roughness={0.7} />
         </mesh>
       </group>
-
-      {/* Plush Lounge Sofa */}
-      <group position={[5.8, 0, -0.7]}>
-        <mesh position={[0, 0.5, 0]} castShadow>
-          <boxGeometry args={[2.6, 0.72, 0.84]} />
-          <meshStandardMaterial color="#7209b7" roughness={0.7} />
-        </mesh>
-        <mesh position={[0, 0.95, -0.1]}>
-          <boxGeometry args={[2.6, 0.45, 0.18]} />
-          <meshStandardMaterial color="#8338ec" roughness={0.74} />
-        </mesh>
-        <mesh position={[-1.85, 0.86, 0.2]}>
-          <boxGeometry args={[0.72, 1.72, 0.4]} />
-          <meshStandardMaterial color="#171b2e" metalness={0.5} />
-        </mesh>
-        <mesh position={[-1.85, 1.06, -0.02]}>
-          <boxGeometry args={[0.5, 0.48, 0.025]} />
-          <meshStandardMaterial color="#ff007f" emissive="#ff007f" emissiveIntensity={1.1} />
-        </mesh>
-      </group>
     </group>
   );
 }
@@ -1041,7 +1093,7 @@ function CoffeeAndLounge() {
 /* -------------------------------------------------------------------------- */
 function ResearchAndWhiteboard() {
   return (
-    <group position={[-6.55, 0, -4.9]}>
+    <group position={[-11.8, 0, -8.4]}>
       <mesh position={[0, 1.38, 0]}>
         <boxGeometry args={[2.75, 1.88, 0.1]} />
         <meshStandardMaterial color="#e7eff4" roughness={0.56} />
@@ -1079,11 +1131,7 @@ function ResearchAndWhiteboard() {
 /* -------------------------------------------------------------------------- */
 function ArcadeAndPlants() {
   const foliageGroup = useRef<Group>(null);
-  const plantPositions: readonly (readonly [number, number])[] = [
-    [4.75, -3.05],
-    [7.85, -2.8],
-    [7.3, 2.45]
-  ];
+  const plantPositions: readonly (readonly [number, number])[] = [[12.4, 5.4]];
 
   useFrame(({ clock }) => {
     if (foliageGroup.current) {
@@ -1094,7 +1142,7 @@ function ArcadeAndPlants() {
   return (
     <group>
       {/* Retro Arcade Machine */}
-      <group position={[8, 0, 0.82]}>
+      <group position={[13.2, 0, 0.82]}>
         <mesh position={[0, 0.85, 0]} castShadow>
           <boxGeometry args={[0.68, 1.7, 0.48]} />
           <meshStandardMaterial color="#16182b" metalness={0.45} roughness={0.48} />
@@ -1151,7 +1199,7 @@ function DeliveryShelf({
     .filter((artifact) => ['READY', 'APPROVED'].includes(artifact.status.toUpperCase()))
     .slice(0, 4);
   return (
-    <group position={[6.72, 0, -5.2]}>
+    <group position={[11.7, 0, -8.5]}>
       <mesh position={[0, 0.45, 0]} castShadow>
         <boxGeometry args={[1.9, 0.12, 0.54]} />
         <meshStandardMaterial color="#1b7868" metalness={0.22} roughness={0.5} />
@@ -1196,9 +1244,9 @@ function BriefingWall({
   onSelectArtifact?: ((artifact: RoomArtifact) => void) | undefined;
 }) {
   return (
-    <group position={[0, 0, -5.85]}>
+    <group position={[0, 0, -9.15]}>
       <mesh position={[0, 1.58, 0]} receiveShadow>
-        <boxGeometry args={[17.2, 3.16, 0.15]} />
+        <boxGeometry args={[28.4, 3.16, 0.15]} />
         <meshStandardMaterial color="#0a1424" metalness={0.28} roughness={0.72} />
       </mesh>
       <mesh position={[0, 1.7, 0.1]}>
@@ -1223,7 +1271,7 @@ function BriefingWall({
 /* -------------------------------------------------------------------------- */
 function MeetingZone() {
   return (
-    <group position={[0, 0, 4.05]}>
+    <group position={[0, 0, 8.1]}>
       <mesh position={[0, 0.48, 0]} castShadow receiveShadow>
         <cylinderGeometry args={[1.45, 1.45, 0.14, 40]} />
         <meshStandardMaterial color="#24405a" metalness={0.45} roughness={0.45} />
@@ -1258,11 +1306,11 @@ function MeetingZone() {
 function VoxelFloor() {
   const tiles = useMemo(() => {
     const next: ReactNode[] = [];
-    for (let x = -9; x < 9; x += 1)
+    for (let x = -10; x < 10; x += 1)
       for (let z = -7; z < 7; z += 1) {
-        const server = x >= 4 && z >= 2;
-        const lounge = x >= 4 && z < 2;
-        const meeting = x < -3 && z >= 2;
+        const server = x >= 5 && z >= 2;
+        const lounge = x >= 5 && z < 2;
+        const meeting = x < -4 && z >= 2;
         const color = server
           ? (x + z) % 2
             ? '#132a35'
@@ -1279,8 +1327,12 @@ function VoxelFloor() {
                 ? '#17263a'
                 : '#122238';
         next.push(
-          <mesh key={`${x}:${z}`} position={[x + 0.5, -0.09, z + 0.5]} receiveShadow>
-            <boxGeometry args={[0.98, 0.16, 0.98]} />
+          <mesh
+            key={`${x}:${z}`}
+            position={[(x + 0.5) * 1.48, -0.09, (z + 0.5) * 1.48]}
+            receiveShadow
+          >
+            <boxGeometry args={[1.45, 0.16, 1.45]} />
             <meshStandardMaterial color={color} roughness={0.84} metalness={0.08} />
           </mesh>
         );
@@ -1288,6 +1340,24 @@ function VoxelFloor() {
     return next;
   }, []);
   return <group>{tiles}</group>;
+}
+
+function OfficeDoorway() {
+  return (
+    <group position={[-14.82, 0, -7.8]}>
+      <mesh position={[0, 2.05, -1.45]}>
+        <boxGeometry args={[0.24, 0.18, 3.05]} />
+        <meshStandardMaterial color="#00f5d4" emissive="#00f5d4" emissiveIntensity={0.75} />
+      </mesh>
+      {[-1.45, 1.45].map((z) => (
+        <mesh key={z} position={[0, 1.03, z]}>
+          <boxGeometry args={[0.24, 2.05, 0.18]} />
+          <meshStandardMaterial color="#24364d" metalness={0.62} roughness={0.32} />
+        </mesh>
+      ))}
+      <pointLight position={[0.9, 1.2, 0]} color="#00f5d4" intensity={5} distance={3.4} />
+    </group>
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1298,30 +1368,35 @@ function OfficeShell() {
     <>
       <VoxelFloor />
       <mesh position={[0, -0.22, 0]} receiveShadow>
-        <boxGeometry args={[18.5, 0.2, 14.5]} />
+        <boxGeometry args={[30, 0.2, 21]} />
         <meshStandardMaterial color="#080d17" />
       </mesh>
-      <mesh position={[0, 2.25, -7.22]}>
-        <boxGeometry args={[18.4, 4.5, 0.28]} />
+      <mesh position={[0, 2.25, -10.52]}>
+        <boxGeometry args={[30, 4.5, 0.28]} />
         <meshStandardMaterial color="#1f2330" roughness={0.72} />
       </mesh>
-      <mesh position={[-9.22, 2.25, 0]}>
-        <boxGeometry args={[0.28, 4.5, 14.4]} />
+      <mesh position={[-15.02, 2.25, 2.075]}>
+        <boxGeometry args={[0.28, 4.5, 16.85]} />
         <meshStandardMaterial color="#1f2330" roughness={0.72} />
       </mesh>
-      <mesh position={[0, 4.24, -7.04]}>
-        <boxGeometry args={[17.8, 0.08, 0.08]} />
+      <mesh position={[-15.02, 2.25, -9.875]}>
+        <boxGeometry args={[0.28, 4.5, 1.25]} />
+        <meshStandardMaterial color="#1f2330" roughness={0.72} />
+      </mesh>
+      <mesh position={[0, 4.24, -10.34]}>
+        <boxGeometry args={[29.4, 0.08, 0.08]} />
         <meshStandardMaterial color="#00f5d4" emissive="#00f5d4" emissiveIntensity={1.1} />
       </mesh>
-      <mesh position={[-9.04, 4.24, 0]}>
-        <boxGeometry args={[0.08, 0.08, 13.8]} />
+      <mesh position={[-14.84, 4.24, 0]}>
+        <boxGeometry args={[0.08, 0.08, 20.4]} />
         <meshStandardMaterial color="#ff007f" emissive="#ff007f" emissiveIntensity={1.1} />
       </mesh>
-      <mesh position={[-6.95, 1.8, 3.2]}>
+      <OfficeDoorway />
+      <mesh position={[-11.4, 1.8, 4.8]}>
         <boxGeometry args={[2.15, 1.45, 0.05]} />
         <meshStandardMaterial color="#12345c" emissive="#236ec4" emissiveIntensity={0.24} />
       </mesh>
-      <mesh position={[6.95, 1.8, 3.2]}>
+      <mesh position={[11.4, 1.8, 4.8]}>
         <boxGeometry args={[2.15, 1.45, 0.05]} />
         <meshStandardMaterial color="#12345c" emissive="#236ec4" emissiveIntensity={0.24} />
       </mesh>
@@ -1364,13 +1439,25 @@ function Room({
     cyberpunk: { background: '#05040d', ambient: 0.36, key: '#f72585', neon: '#00f5d4' }
   };
   const theme = palette[lighting];
+  const [departedIds, setDepartedIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setDepartedIds((current) => {
+      const next = new Set(current);
+      for (const occupant of occupants) {
+        if (occupant.transition !== 'exit') next.delete(occupant.id);
+      }
+      return next;
+    });
+  }, [occupants]);
   const motionRate = visualMode === 'coffee' ? 2.4 : visualMode === 'party' ? 1.55 : 1;
   const alert = visualMode === 'incident';
+  const deskCount = Math.min(maximumDeskCapacity, Math.max(visibleDeskCapacity, occupants.length));
+  const occupantsByDesk = new Map(occupants.map((occupant) => [occupant.anchor, occupant]));
 
   return (
     <>
       <color attach="background" args={[alert ? '#210713' : theme.background]} />
-      <fog attach="fog" args={[alert ? '#210713' : theme.background, 11, 25]} />
+      <fog attach="fog" args={[alert ? '#210713' : theme.background, 18, 38]} />
       <ambientLight intensity={theme.ambient} />
       <directionalLight
         position={[3.8, 8.5, 4]}
@@ -1381,16 +1468,16 @@ function Room({
         shadow-mapSize-height={1024}
       />
       <pointLight
-        position={[-6.2, 2.6, 0.5]}
+        position={[-10.2, 3.2, 0.5]}
         color={alert ? '#ff0044' : '#4ea5ff'}
         intensity={alert ? 21 : 14}
-        distance={8}
+        distance={13}
       />
       <pointLight
-        position={[6.2, 2.2, -1.2]}
+        position={[10.2, 2.8, -1.2]}
         color={theme.neon}
         intensity={visualMode === 'party' ? 20 : 11}
-        distance={8}
+        distance={13}
       />
 
       <OfficeShell />
@@ -1398,27 +1485,37 @@ function Room({
       <MeetingZone />
 
       {/* Desks */}
-      {occupants.map((occupant) => (
-        <Desk key={`desk:${occupant.id}`} occupant={occupant} onSelectAgent={onSelectAgent} />
+      {Array.from({ length: deskCount }, (_, slot) => (
+        <Desk
+          key={`desk:${slot}`}
+          slot={slot}
+          occupant={occupantsByDesk.get(slot)}
+          onSelectAgent={onSelectAgent}
+        />
       ))}
 
       {/* Avatars */}
-      {occupants.map((occupant) => (
-        <group
-          key={`agent:${occupant.id}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelectAgent?.(occupant);
-          }}
-        >
-          <AgentAvatar
-            occupant={occupant}
-            motionRate={motionRate}
-            motionEnabled={motionEnabled}
-            soundOn={soundOn}
-          />
-        </group>
-      ))}
+      {occupants
+        .filter((occupant) => !departedIds.has(occupant.id))
+        .map((occupant) => (
+          <group
+            key={`agent:${occupant.id}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectAgent?.(occupant);
+            }}
+          >
+            <AgentAvatar
+              occupant={occupant}
+              motionRate={motionRate}
+              motionEnabled={motionEnabled}
+              soundOn={soundOn}
+              onDepartureComplete={(occupantId) =>
+                setDepartedIds((current) => new Set(current).add(occupantId))
+              }
+            />
+          </group>
+        ))}
 
       <CameraController preset={preset} selectedAgent={selectedAgent} />
       <OrbitControls
@@ -1426,7 +1523,7 @@ function Room({
         enableDamping
         dampingFactor={0.08}
         minDistance={6}
-        maxDistance={20}
+        maxDistance={34}
         minPolarAngle={0.45}
         maxPolarAngle={1.42}
         target={[0, 0.8, -0.55]}
@@ -1556,7 +1653,7 @@ export function OfficeScene({
         shadows={graphics.shadows}
         dpr={graphics.dpr}
         frameloop={pageHidden ? 'demand' : 'always'}
-        camera={{ position: [0, 8.5, 12.5], fov: 40 }}
+        camera={{ position: [0, 13.5, 20.5], fov: 40 }}
         gl={{ antialias: graphics.antialias, alpha: false, powerPreference: 'high-performance' }}
         fallback={
           <RoomFallback
